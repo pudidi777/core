@@ -15,32 +15,43 @@ app.get('/video-info', async (req, res) => {
         const videoDetails = info.videoDetails;
         const formats = info.formats;
 
-        const resolutions = formats
+        const videoFormats = formats
             .filter(format => format.qualityLabel)
-            .map(format => ({
-                label: `${format.qualityLabel} ${format.fps} ${format.quality === 'hd' ? 'HDR' : ''}`,
-                height: format.height,
-                fps: format.fps,
-                hdr: format.quality === 'hd',
-                size: format.contentLength ? `${(format.contentLength / 1024 / 1024).toFixed(2)} MB` : 'Unavailable',
-                itag: format.itag
-            }));
+            .reduce((uniqueFormats, format) => {
+                const quality = format.qualityLabel;
+                if (!uniqueFormats.some(f => f.quality === quality)) {
+                    uniqueFormats.push({
+                        quality: quality,
+                        itag: format.itag,
+                        fps: format.fps,
+                        size: format.contentLength ? `${(format.contentLength / 1024 / 1024).toFixed(2)} MB` : 'Unavailable',
+                        hdr: format.quality === 'hd'
+                    });
+                }
+                return uniqueFormats;
+            }, []);
 
-        const audioBitrates = formats
+        const audioFormats = formats
             .filter(format => format.audioBitrate)
-            .map(format => ({
-                bitrate: format.audioBitrate,
-                ukuran: format.contentLength ? `${(format.contentLength / 1024 / 1024).toFixed(2)} MB` : 'Unavailable',
-                itag: format.itag
-            }));
+            .reduce((uniqueFormats, format) => {
+                const bitrate = format.audioBitrate;
+                if (!uniqueFormats.some(f => f.bitrate === bitrate)) {
+                    uniqueFormats.push({
+                        bitrate: bitrate,
+                        itag: format.itag,
+                        size: format.contentLength ? `${(format.contentLength / 1024 / 1024).toFixed(2)} MB` : 'Unavailable'
+                    });
+                }
+                return uniqueFormats;
+            }, []);
 
         const result = {
             title: videoDetails.title,
             uploader: videoDetails.author.name,
             thumbnail: videoDetails.thumbnails[videoDetails.thumbnails.length - 1].url,
             duration: new Date(parseInt(videoDetails.lengthSeconds) * 1000).toISOString().substr(11, 8),
-            resolutions: resolutions,
-            audioBitrates: audioBitrates
+            videoFormats: videoFormats,
+            audioFormats: audioFormats
         };
 
         res.json(result);
@@ -51,7 +62,7 @@ app.get('/video-info', async (req, res) => {
 
 app.get('/download/video', async (req, res) => {
     const videoUrl = req.query.url;
-    const itag = req.query.itag;
+    const quality = req.query.quality;
 
     if (!ytdl.validateURL(videoUrl)) {
         return res.status(400).json({ error: 'Invalid YouTube URL' });
@@ -61,9 +72,13 @@ app.get('/download/video', async (req, res) => {
         const info = await ytdl.getInfo(videoUrl);
         let format;
 
-        if (itag) {
-            format = ytdl.chooseFormat(info.formats, { quality: itag });
-        } else {
+        if (quality) {
+            format = info.formats
+                .filter(f => f.qualityLabel === quality && f.hasVideo)
+                .sort((a, b) => b.bitrate - a.bitrate)[0];
+        }
+
+        if (!format) {
             format = ytdl.chooseFormat(info.formats, { quality: 'highest' });
         }
 
@@ -80,7 +95,7 @@ app.get('/download/video', async (req, res) => {
 
 app.get('/download/audio', async (req, res) => {
     const videoUrl = req.query.url;
-    const itag = req.query.itag;
+    const bitrate = parseInt(req.query.bitrate);
 
     if (!ytdl.validateURL(videoUrl)) {
         return res.status(400).json({ error: 'Invalid YouTube URL' });
@@ -90,14 +105,18 @@ app.get('/download/audio', async (req, res) => {
         const info = await ytdl.getInfo(videoUrl);
         let format;
 
-        if (itag) {
-            format = ytdl.chooseFormat(info.formats, { quality: itag, filter: 'audioonly' });
-        } else {
+        if (bitrate) {
+            format = info.formats
+                .filter(f => f.audioBitrate === bitrate && f.hasAudio && !f.hasVideo)
+                .sort((a, b) => b.bitrate - a.bitrate)[0];
+        }
+
+        if (!format) {
             format = ytdl.chooseFormat(info.formats, { quality: 'highestaudio' });
         }
 
         if (!format) {
-            return res.status(404).json({ error: 'Requested audio quality not available' });
+            return res.status(404).json({ error: 'Requested bitrate not available' });
         }
 
         res.header('Content-Disposition', `attachment; filename="${info.videoDetails.title}.mp3"`);
